@@ -14,7 +14,8 @@ app = FastAPI(title="DRM Agent", version="1.0.0")
 
 # Demo-only in-memory state. Replace with a database/secure session store in production.
 sessions: dict[str, dict[str, Any]] = {}
-oauth_states: dict[str, str] = {}
+# oauth_states: dict[str, str] = {}
+oauth_states: dict[str, dict[str, str]] = {}
 donor_records: list[DonorRecord] = []
 
 
@@ -35,19 +36,43 @@ def login(username: str, password: str):
     if username != settings.ngo_username or password != settings.ngo_password:
         raise HTTPException(status_code=401, detail="Invalid credentials")
 
-    auth_url, state = create_authorization_url()
+    # auth_url, state = create_authorization_url()
+    # login_token = secrets.token_urlsafe(32)
+    # oauth_states[state] = login_token
+    auth_url, state, code_verifier = create_authorization_url()
+
     login_token = secrets.token_urlsafe(32)
-    oauth_states[state] = login_token
+
+    oauth_states[state] = {
+        "login_token": login_token,
+        "code_verifier": code_verifier,
+    }
     sessions[login_token] = {"authenticated": True, "gmail_credentials": None}
     return {"message": "Credentials accepted. Authorize Gmail next.", "google_auth_url": auth_url}
 
 
 @app.get("/auth/google/callback")
 def google_callback(code: str, state: str):
-    login_token = oauth_states.pop(state, None)
-    if not login_token:
-        raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
-    credentials = exchange_code(code, state)
+    # login_token = oauth_states.pop(state, None)
+    # if not login_token:
+    #     raise HTTPException(status_code=400, detail="Invalid or expired OAuth state")
+    # credentials = exchange_code(code, state)
+    oauth_data = oauth_states.pop(state, None)
+
+    if not oauth_data:
+        raise HTTPException(
+            status_code=400,
+            detail="Invalid or expired OAuth state"
+        )
+
+    login_token = oauth_data["login_token"]
+    code_verifier = oauth_data["code_verifier"]
+
+    credentials = exchange_code(
+        code,
+        state,
+        code_verifier,
+    )
     sessions[login_token]["gmail_credentials"] = credentials.to_json()
     response = RedirectResponse(url="/docs")
     response.set_cookie("session_token", login_token, httponly=True, max_age=28800, samesite="lax")
