@@ -34,6 +34,10 @@ Use this priority order:
 5. Wait: no action is currently needed.
 
 Never invent facts. The final action must be exactly one of the five options.
+Do not make the final human-approval decision. The application applies
+a separate deterministic approval policy after your response.
+Set requires_human_approval to false unless the plan itself explicitly
+indicates Human Review.
 """
 
 
