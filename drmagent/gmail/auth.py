@@ -11,6 +11,8 @@ from drmagent.config import settings
 
 SCOPES = [
     "https://www.googleapis.com/auth/gmail.readonly",
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.compose",
     "openid",
     "https://www.googleapis.com/auth/userinfo.email",
 ]

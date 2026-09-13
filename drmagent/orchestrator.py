@@ -89,7 +89,7 @@ def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
                 settings.max_conversation_chars,
             )
 
-            execution = execute_plan(
+            execution_result = execute_plan(
                 agent=execution_agent,
                 profile=profile,
                 classification=classification,
@@ -98,6 +98,41 @@ def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
                 message_id=gmail_context.message_id,
                 conversation_context=conversation_context,
             )
+
+            if (
+                execution_result.status == "drafted"
+                and execution_result.email is not None
+            ):
+                email = execution_result.email
+
+                gmail_result = gmail.send_reply(
+                    thread_id=execution_result.thread_id,
+                    message_id=execution_result.message_id,
+                    to=email.to,
+                    subject=email.subject,
+                    body=email.body,
+                )
+
+                execution = {
+                    "status": "sent",
+                    "thread_id": execution_result.thread_id,
+                    "message_id": execution_result.message_id,
+                    "gmail_message_id": gmail_result.get("id"),
+                    "email": email.model_dump(),
+                }
+
+            else:
+                execution = execution_result.model_dump()
+
+            # execution = execute_plan(
+            #     agent=execution_agent,
+            #     profile=profile,
+            #     classification=classification,
+            #     plan=plan,
+            #     thread_id=gmail_context.thread_id,
+            #     message_id=gmail_context.message_id,
+            #     conversation_context=conversation_context,
+            # )
             # execution = execution_result.model_dump()
         else:
             execution = {

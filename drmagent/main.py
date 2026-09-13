@@ -128,3 +128,43 @@ def process_donors(request: Request):
     )
     results = [process_donor(gmail, donor) for donor in donor_records]
     return {"count": len(results), "results": results}
+
+
+@app.post("/test/gmail-reply")
+def test_gmail_reply(request: Request):
+    session = _session(request)
+
+    if not session.get("gmail_credentials"):
+        raise HTTPException(
+            status_code=400,
+            detail="Gmail authorization is required",
+        )
+
+    from google.oauth2.credentials import Credentials
+    credentials = Credentials.from_authorized_user_info(
+        __import__("json").loads(session["gmail_credentials"])
+    )
+
+    gmail = GmailService(
+        credentials,
+        max_threads=settings.max_threads_per_donor,
+        max_messages_per_thread=settings.max_messages_per_thread,
+    )
+
+    result = gmail.send_reply(
+        thread_id="1a096798792ca6ef",
+        message_id="1a0967ab3c430a11",
+        to="cairen.in@gmail.com",
+        subject="Re: Test Gmail Reply",
+        body="""Hi,
+
+        This is a test reply from the DRMAgent Gmail execution layer.
+
+        Regards,
+        DRMAgent""",
+    )
+
+    return {
+        "status": "sent",
+        "gmail_response": result,
+    }

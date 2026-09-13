@@ -1,5 +1,6 @@
 import base64
 import re
+from email.message import EmailMessage as MimeEmailMessage
 from email.utils import parsedate_to_datetime
 from typing import Any
 
@@ -124,3 +125,75 @@ class GmailService:
             self.get_thread(donor.donor_id, donor.email, thread_id)
             for thread_id in self.find_thread_ids(donor.email)
         ]
+
+    def send_reply(
+        self,
+        thread_id: str,
+        message_id: str,
+        to: str,
+        subject: str,
+        body: str,
+    ) -> dict[str, Any]:
+        """
+        Send an email as a reply to an existing Gmail thread.
+
+        Args:
+            thread_id: Gmail thread ID.
+            message_id: Gmail internal message ID of the message being replied to.
+            to: Recipient email address.
+            subject: Email subject.
+            body: Plain-text email body.
+
+        Returns:
+            Gmail API response for the sent message.
+        """
+
+        # Fetch the original Gmail message so we can obtain its RFC Message-ID.
+        original = (
+            self.service.users()
+            .messages()
+            .get(
+                userId="me",
+                id=message_id,
+                format="metadata",
+                metadataHeaders=["Message-ID", "Subject"],
+            )
+            .execute()
+        )
+
+        headers = original.get("payload", {}).get("headers", [])
+
+        parent_message_id = self._header(headers, "Message-ID")
+
+        if not parent_message_id:
+            raise ValueError(
+                f"Could not find RFC Message-ID for Gmail message {message_id}"
+            )
+
+        # Gmail threading requires the RFC message ID headers in addition
+        # to the Gmail threadId.
+        mime_message = MimeEmailMessage()
+        mime_message["To"] = to
+        mime_message["Subject"] = subject
+        mime_message["In-Reply-To"] = parent_message_id
+        mime_message["References"] = parent_message_id
+        mime_message.set_content(body)
+
+        encoded_message = base64.urlsafe_b64encode(
+            mime_message.as_bytes()
+        ).decode("utf-8")
+
+        result = (
+            self.service.users()
+            .messages()
+            .send(
+                userId="me",
+                body={
+                    "raw": encoded_message,
+                    "threadId": thread_id,
+                },
+            )
+            .execute()
+        )
+
+        return result
