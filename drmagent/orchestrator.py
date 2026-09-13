@@ -100,6 +100,69 @@ def _process_donor_inner(gmail: GmailService, donor: DonorRecord) -> dict:
         plan.message_context = None
     else:
         _state_store.record_action(donor.donor_id, plan.action)
+    execution = None
+
+    if not plan.requires_human_approval:
+        gmail_context = get_gmail_context(conversations)
+
+        if gmail_context:
+            execution_agent = create_execution_agent()
+
+            conversation_context = format_conversations(
+                conversations,
+                settings.max_conversation_chars,
+            )
+
+            execution_result = execute_plan(
+                agent=execution_agent,
+                profile=profile,
+                classification=classification,
+                plan=plan,
+                thread_id=gmail_context.thread_id,
+                message_id=gmail_context.message_id,
+                conversation_context=conversation_context,
+            )
+
+            if (
+                execution_result.status == "drafted"
+                and execution_result.email is not None
+            ):
+                email = execution_result.email
+
+                gmail_result = gmail.send_reply(
+                    thread_id=execution_result.thread_id,
+                    message_id=execution_result.message_id,
+                    to=email.to,
+                    subject=email.subject,
+                    body=email.body,
+                )
+
+                execution = {
+                    "status": "sent",
+                    "thread_id": execution_result.thread_id,
+                    "message_id": execution_result.message_id,
+                    "gmail_message_id": gmail_result.get("id"),
+                    "email": email.model_dump(),
+                }
+
+            else:
+                execution = execution_result.model_dump()
+
+            # execution = execute_plan(
+            #     agent=execution_agent,
+            #     profile=profile,
+            #     classification=classification,
+            #     plan=plan,
+            #     thread_id=gmail_context.thread_id,
+            #     message_id=gmail_context.message_id,
+            #     conversation_context=conversation_context,
+            # )
+            # execution = execution_result.model_dump()
+        else:
+            execution = {
+                "status": "not_executed",
+                "reason": "No Gmail thread/message context available.",
+            }
 
     # ------------------------------------------------------------------
     # 5. Return planning + approval information.
