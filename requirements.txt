@@ -10,3 +10,4 @@ google-auth>=2.34.0
 google-auth-oauthlib>=1.2.1
 beautifulsoup4>=4.12.3
 strands-agents[openai]
+uvicorn
