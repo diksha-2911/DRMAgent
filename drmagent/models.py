@@ -81,3 +81,20 @@ class ActionPlan(BaseModel):
     message_context: Optional[str] = None
     requires_human_approval: bool = False
     due_date: Optional[str] = None
+
+class GmailContext(BaseModel):
+    thread_id: str
+    message_id: str
+
+class EmailDraft(BaseModel):
+    to: str
+    subject: str
+    body: str
+
+
+class ExecutionResult(BaseModel):
+    status: Literal["drafted", "not_executed"]
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
+    email: Optional[EmailDraft] = None
+    reason: Optional[str] = None

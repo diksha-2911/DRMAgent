@@ -44,6 +44,11 @@ class Settings:
         "openai/gpt-oss-120b",
     )
 
+    execution_model: str = os.getenv(
+        "EXECUTION_MODEL",
+        "openai/gpt-oss-120b",
+    )
+
     max_threads_per_donor: int = int(
         os.getenv("MAX_THREADS_PER_DONOR", "20")
     )

@@ -4,9 +4,10 @@ import io
 from drmagent.config import settings
 from drmagent.drm.agent import create_drm_agent, classify_and_plan
 from drmagent.drm.approval import apply_human_approval_policy
+from drmagent.drm.execution_agent import create_execution_agent, execute_plan
 from drmagent.gmail.service import GmailService
 from drmagent.models import DonorRecord
-from drmagent.profile.service import build_donor_profile
+from drmagent.profile.service import build_donor_profile, get_gmail_context, format_conversations
 
 
 def load_donors_from_csv(content: bytes) -> list[DonorRecord]:
@@ -70,9 +71,42 @@ def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
     )
 
     # ------------------------------------------------------------------
-    # 4. Return planning + approval information.
+    # 4. HARD APPROVAL GATE.
     #
-    # Execution Agent will be connected in a later step.
+    # The Execution Agent must NEVER be called when human approval
+    # is required.
+    # ------------------------------------------------------------------
+    execution = None
+
+    if not plan.requires_human_approval:
+        gmail_context = get_gmail_context(conversations)
+
+        if gmail_context:
+            execution_agent = create_execution_agent()
+
+            conversation_context = format_conversations(
+                conversations,
+                settings.max_conversation_chars,
+            )
+
+            execution = execute_plan(
+                agent=execution_agent,
+                profile=profile,
+                classification=classification,
+                plan=plan,
+                thread_id=gmail_context.thread_id,
+                message_id=gmail_context.message_id,
+                conversation_context=conversation_context,
+            )
+            # execution = execution_result.model_dump()
+        else:
+            execution = {
+                "status": "not_executed",
+                "reason": "No Gmail thread/message context available.",
+            }
+
+    # ------------------------------------------------------------------
+    # 5. Return planning + approval + execution information.
     # ------------------------------------------------------------------
     return {
         "donor": donor.model_dump(),
@@ -84,4 +118,5 @@ def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
             "requires_human_approval": plan.requires_human_approval,
             "reason": approval_reasons,
         },
+        "execution": execution,
     }
