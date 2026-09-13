@@ -3,6 +3,7 @@
 import re
 from typing import Optional
 
+from drmagent.config import settings
 from drmagent.models import (
     ActionClassification,
     ActionPlan,
@@ -184,12 +185,45 @@ def _rule_explicit_human_review(
     return None
 
 
+def _rule_low_confidence(
+    profile: DonorProfile,
+    classification: ActionClassification,
+    threshold: float,
+) -> Optional[str]:
+    """A model that wasn't confident is exactly the case a human should see,
+    not a case that should quietly proceed as 'Wait' or 'Outreach'."""
+
+    if profile.confidence < threshold:
+        return (
+            f"Donor profile confidence ({profile.confidence:.2f}) is below the "
+            f"human-review threshold ({threshold:.2f})."
+        )
+
+    if classification.confidence < threshold:
+        return (
+            f"Action classification confidence ({classification.confidence:.2f}) "
+            f"is below the human-review threshold ({threshold:.2f})."
+        )
+
+    return None
+
+
+def _rule_high_urgency(
+    classification: ActionClassification,
+) -> Optional[str]:
+    if classification.urgency == "high" and classification.action != "Human Review":
+        return "Classification flagged high urgency; routed for human review as a precaution."
+
+    return None
+
+
 def determine_human_approval(
     profile: DonorProfile,
     classification: ActionClassification,
     plan: ActionPlan,
     conversations: list[DonorConversation],
     donation_threshold: float = DEFAULT_DONATION_APPROVAL_THRESHOLD,
+    confidence_threshold: float = settings.min_confidence_threshold,
 ) -> tuple[bool, list[str]]:
     """Evaluate every deterministic approval rule.
 
@@ -239,6 +273,20 @@ def determine_human_approval(
     if reason:
         reasons.append(reason)
 
+    # Rule 6
+    reason = _rule_low_confidence(
+        profile,
+        classification,
+        confidence_threshold,
+    )
+    if reason:
+        reasons.append(reason)
+
+    # Rule 7
+    reason = _rule_high_urgency(classification)
+    if reason:
+        reasons.append(reason)
+
     return bool(reasons), reasons
 
 
@@ -248,8 +296,20 @@ def apply_human_approval_policy(
     plan: ActionPlan,
     conversations: list[DonorConversation],
     donation_threshold: float = DEFAULT_DONATION_APPROVAL_THRESHOLD,
+    confidence_threshold: float = settings.min_confidence_threshold,
 ) -> tuple[ActionPlan, list[str]]:
-    """Apply deterministic approval policy to the action plan."""
+    """Apply deterministic approval policy to the action plan.
+
+    This is the single authoritative decision point for whether a human
+    must be involved. Previously it only flipped `requires_human_approval`
+    and left everything else on the plan untouched, which could leave a
+    plan in a contradictory state: flagged for human approval, but still
+    carrying an automated `recommended_action` / `message_context` that a
+    future execution step could read and act on before a human ever looks
+    at it. Now, whenever any hard rule fires, the policy also forces the
+    plan's `action` to "Human Review" and clears/rewrites the fields an
+    execution step would otherwise use to act autonomously.
+    """
 
     requires_human_approval, reasons = determine_human_approval(
         profile=profile,
@@ -257,9 +317,22 @@ def apply_human_approval_policy(
         plan=plan,
         conversations=conversations,
         donation_threshold=donation_threshold,
+        confidence_threshold=confidence_threshold,
     )
 
-    # The deterministic policy is authoritative.
     plan.requires_human_approval = requires_human_approval
+
+    if requires_human_approval and plan.action != "Human Review":
+        plan.consistency_notes.append(
+            f"Deterministic approval policy overrode action '{plan.action}' to "
+            "'Human Review' because: " + "; ".join(reasons)
+        )
+        plan.action = "Human Review"
+        plan.recommended_action = "Escalate to a human before any donor communication."
+        plan.next_step = "Human approval required."
+        # Null out fields a future execution/communication step could use
+        # to auto-send something despite the required-approval flag.
+        plan.message_type = None
+        plan.message_context = None
 
     return plan, reasons

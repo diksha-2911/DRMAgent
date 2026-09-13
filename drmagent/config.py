@@ -44,11 +44,6 @@ class Settings:
         "openai/gpt-oss-120b",
     )
 
-    execution_model: str = os.getenv(
-        "EXECUTION_MODEL",
-        "openai/gpt-oss-120b",
-    )
-
     max_threads_per_donor: int = int(
         os.getenv("MAX_THREADS_PER_DONOR", "20")
     )
@@ -67,6 +62,41 @@ class Settings:
     donation_approval_threshold: float = float(
         os.getenv("DONATION_APPROVAL_THRESHOLD", "100000")
     )
+
+    # Below this confidence, either on the extracted profile or on the
+    # classification, the deterministic policy forces Human Review rather
+    # than trusting a low-confidence automated decision.
+    min_confidence_threshold: float = float(
+        os.getenv("MIN_CONFIDENCE_THRESHOLD", "0.5")
+    )
+
+    # A donor won't be re-sent the same low-stakes outbound action
+    # (Thank You / Outreach) more than once within this many days, even if
+    # the model re-derives that action on a later run.
+    action_cooldown_days: int = int(
+        os.getenv("ACTION_COOLDOWN_DAYS", "3")
+    )
+
+    # How many times a structured LLM call is retried before the
+    # deterministic fail-safe (defaulting to Human Review) takes over.
+    llm_max_retries: int = int(os.getenv("LLM_MAX_RETRIES", "2"))
+
+    # Where per-donor action state is persisted for cooldown checks.
+    donor_state_path: str = os.getenv(
+        "DONOR_STATE_PATH", "data/donor_action_state.json"
+    )
+
+    # Symmetric key (Fernet, urlsafe base64, 32 bytes) used to encrypt Gmail
+    # OAuth credentials while they sit in the in-memory session store. If
+    # unset, a key is generated at process start (sessions won't survive a
+    # restart either way in this in-memory demo store, so that's acceptable
+    # for now, but a persistent deployment MUST set SESSION_ENCRYPTION_KEY
+    # explicitly so old encrypted sessions stay decryptable).
+    session_encryption_key: str = os.getenv("SESSION_ENCRYPTION_KEY", "")
+
+    # Idle session / OAuth-state timeout, in seconds. Entries older than
+    # this are swept from the in-memory stores.
+    session_ttl_seconds: int = int(os.getenv("SESSION_TTL_SECONDS", "28800"))
 
 
 settings = Settings()
