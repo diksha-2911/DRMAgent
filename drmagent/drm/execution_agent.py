@@ -51,11 +51,12 @@ The email must be grounded ONLY in information explicitly provided in:
 1. DONOR PROFILE
 2. CLASSIFICATION
 3. APPROVED ACTION PLAN
-4. CONVERSATION CONTEXT
+4. CONVERSATION CONTEXT, if available
 
 These are the ONLY sources of facts that you may use.
 
 You MUST NOT:
+
 - invent facts about the NGO
 - invent programs, initiatives, campaigns, projects, events, or activities
 - invent dates, deadlines, statistics, amounts, outcomes, achievements,
@@ -82,16 +83,12 @@ EMAIL RULES
 
 For email actions:
 
-- Create a professional email draft.
-- Use the donor's name and email from the supplied profile when available.
-- Use the supplied Gmail conversation context to understand what the donor
-  is responding to.
+- Create a professional email.
+- Use the donor's name and email from the supplied profile.
 - Follow the objective and recommended_action from the plan.
 - Keep the response concise and directly relevant to the current action.
-- Preserve the meaning and facts of the existing conversation.
+- Preserve the meaning and facts of the existing conversation when one exists.
 - Do not introduce unrelated information.
-- Do not create additional initiatives, recommendations, updates, or
-  opportunities unless explicitly present in the supplied context.
 - Do not invent facts, attachments, dates, promises, bank details,
   payment information, or other information not present in the context.
 - Do not claim that an attachment has been provided unless an actual
@@ -101,35 +98,39 @@ For email actions:
   information to the donor.
 
 ====================
-ACTION-SPECIFIC BEHAVIOR
+OUTREACH RULES
 ====================
 
-Follow-Up:
-Respond specifically to the pending request or unresolved item identified
-in the supplied context. Do not introduce unrelated information.
+When the action is Outreach and there is NO existing Gmail conversation:
 
-Thank You:
-Thank the donor for their message, support, feedback, or other explicitly
-stated interaction. Do not turn a thank-you response into an update,
-outreach message, fundraising request, or announcement.
+- This is a new prospective-donor email.
+- Generate an introductory email.
+- The email must NOT refer to a previous conversation.
+- Do not pretend that the donor previously contacted the NGO.
+- Do not claim that the donor has previously donated.
+- Do not invent specific NGO programs, achievements, impact figures,
+  initiatives, events, or organizational facts.
+- Use only information explicitly available in the donor profile and plan.
+- Keep the introduction general if specific organizational information
+  is not provided.
 
-Outreach:
-Introduce the NGO or relevant engagement only using information explicitly
-provided in the supplied context. Do not invent organizational programs,
-achievements, initiatives, statistics, or other facts.
+====================
+EXISTING CONVERSATION RULES
+====================
 
-Wait:
-Do not create an email unless the approved action plan explicitly requires
-one.
+When an existing Gmail conversation is supplied:
 
-Human Review:
-This action must not be executed. Do not generate a donor-facing email.
+- Generate a reply based on that conversation.
+- Use the supplied conversation context to understand what the donor
+  is responding to.
+- Keep the reply within the facts of that conversation.
+- Do not introduce unrelated information.
 
 ====================
 OUTPUT
 ====================
 
-Generate the email draft only for an approved executable action.
+Generate the email required by the approved action plan.
 
 Return the result using the required structured output schema.
 """
@@ -147,12 +148,20 @@ def execute_plan(
     profile: DonorProfile,
     classification: ActionClassification,
     plan: ActionPlan,
-    thread_id: str,
-    message_id: str,
+    thread_id: str | None,
+    message_id: str | None,
     conversation_context: str,
 ) -> ExecutionResult:
 
+    if thread_id and message_id:
+        execution_mode = "EXISTING CONVERSATION - REPLY"
+    else:
+        execution_mode = "NEW PROSPECTIVE DONOR - OUTREACH"
+
     execution_input = f"""
+EXECUTION MODE:
+{execution_mode}
+
 DONOR PROFILE:
 {profile.model_dump_json(indent=2)}
 
@@ -163,13 +172,20 @@ APPROVED ACTION PLAN:
 {plan.model_dump_json(indent=2)}
 
 GMAIL CONTEXT:
-thread_id: {thread_id}
-message_id: {message_id}
+thread_id: {thread_id or "NONE"}
+message_id: {message_id or "NONE"}
 
 CONVERSATION CONTEXT:
-{conversation_context}
+{conversation_context or "NO EXISTING GMAIL CONVERSATION"}
 
 Prepare the email required by the approved action plan.
+
+IMPORTANT:
+If EXECUTION MODE is "NEW PROSPECTIVE DONOR - OUTREACH", create a new
+introductory email and do not refer to a previous conversation.
+
+If EXECUTION MODE is "EXISTING CONVERSATION - REPLY", create a reply
+that is grounded in the supplied conversation context.
 """
 
     email_draft = agent.structured_output(

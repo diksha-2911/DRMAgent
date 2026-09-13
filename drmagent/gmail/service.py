@@ -197,3 +197,44 @@ class GmailService:
         )
 
         return result
+
+    def send_email(
+                self,
+                to: str,
+                subject: str,
+                body: str,
+            ) -> dict[str, Any]:
+                """
+                Send a brand-new email that is not a reply to an existing thread.
+    
+                Args:
+                    to: Recipient email address.
+                    subject: Email subject.
+                    body: Plain-text email body.
+    
+                Returns:
+                    Gmail API response for the sent message.
+                """
+                mime_message = MimeEmailMessage()
+                mime_message["To"] = to
+                mime_message["Subject"] = subject
+                mime_message.set_content(body)
+    
+                encoded_message = base64.urlsafe_b64encode(
+                    mime_message.as_bytes()
+                ).decode("utf-8")
+    
+                result = (
+                    self.service.users()
+                    .messages()
+                    .send(
+                        userId="me",
+                        body={
+                            "raw": encoded_message,
+                        },
+                    )
+                    .execute()
+                )
+    
+                return result
+    
