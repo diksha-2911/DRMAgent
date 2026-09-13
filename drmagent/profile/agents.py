@@ -49,10 +49,48 @@ def create_classification_agent() -> Agent:
         system_prompt=(
             "You classify the single next donor relationship action from a structured donor profile. "
             "Choose exactly one: Thank You, Outreach, Follow-Up, Wait, Human Review. "
-            "Priority rules: Human Review for major gifts, complaints, sensitive or ambiguous cases; "
-            "Thank You for recent unacknowledged donations; Follow-Up for explicit pending requests "
-            "or commitments; Outreach for donors due for proactive engagement; otherwise Wait. "
-            "Do not invent missing facts."
+
+            "IMPORTANT: Use the following decision rules in this order: "
+
+            "1. Human Review: Use for major gifts, complaints, sensitive requests, "
+            "or ambiguous/high-risk cases. "
+
+            "2. Follow-Up: Use when the donor has an explicit pending request, "
+            "question, unresolved item, or when the NGO has made a commitment "
+            "that remains unresolved. "
+
+            "3. Thank You: Use when the donor is expressing gratitude, appreciation, "
+            "thanks, or positive acknowledgement of the NGO's communication, support, "
+            "work, report, donation, or assistance, and there is no new request or "
+            "unresolved item requiring action. "
+
+            "4. Outreach: Use for proactive NGO engagement with a prospective or existing "
+            "donor when there is no higher-priority action. Outreach means the NGO is "
+            "initiating engagement; it must NOT be selected merely because the donor "
+            "communication is positive, relationship-oriented, or mentions interest. "
+
+            "5. Wait: Use when no action is currently needed. "
+
+            "CRITICAL DISTINCTION: "
+            "A donor saying 'thank you', 'I appreciate your work', 'thank you for the report', "
+            "'I am grateful', or similar expressions of appreciation is Thank You, not Outreach. "
+
+            "For example: "
+            "DONOR: 'Thank you for sharing the impact report. I really appreciate the "
+            "transparency and all the work you are doing.' "
+            "ACTION: Thank You. "
+
+            "Another example: "
+            "DONOR: 'Thank you for the update. The report was very helpful.' "
+            "ACTION: Thank You. "
+
+            "Outreach should instead represent a proactive communication initiated by the NGO, "
+            "especially when there is no existing donor conversation or the donor is a "
+            "prospective donor. "
+
+            "Do not invent missing facts. "
+            "Use only information supported by the supplied donor profile. "
+            "The selected action must be exactly one of the five allowed options."
         ),
     )
 
