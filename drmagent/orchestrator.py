@@ -1,5 +1,7 @@
 import csv
 import io
+from typing import Any
+from email.utils import parseaddr
 
 from drmagent.config import settings
 from drmagent.drm.agent import create_drm_agent, classify_and_plan
@@ -40,6 +42,67 @@ def load_donors_from_csv(content: bytes) -> list[DonorRecord]:
         if (row.get("donor_id") or "").strip()
         and (row.get("email") or "").strip()
     ]
+
+async def process_incoming_message(
+    gmail: GmailService,
+    message: dict[str, Any],
+    donor_records: list[DonorRecord],
+) -> dict | None:
+    """
+    Process a newly detected Gmail message through the existing
+    donor relationship management workflow.
+
+    The incoming sender is resolved against the donor CSV.
+    Once resolved, the existing process_donor() workflow is reused.
+    """
+
+    sender = message.get("sender", "")
+    sender_email = parseaddr(sender)[1].strip().lower()
+
+    if not sender_email:
+        print(
+            "AUTONOMOUS: Could not extract sender email "
+            f"from {sender!r}"
+        )
+        return None
+
+    print(
+        "AUTONOMOUS: Resolving incoming email from "
+        f"{sender_email}"
+    )
+
+    donor = next(
+        (
+            record
+            for record in donor_records
+            if record.email.strip().lower() == sender_email
+        ),
+        None,
+    )
+
+    if donor is None:
+        print(
+            "AUTONOMOUS: No donor found in CSV for "
+            f"{sender_email}. Message will not be processed."
+        )
+        return None
+
+    print(
+        "AUTONOMOUS: Donor resolved -> "
+        f"{donor.donor_id} ({donor.email})"
+    )
+
+    result = process_donor(gmail, donor)
+
+    print(
+        "AUTONOMOUS: DRM workflow completed -> "
+        f"donor={donor.donor_id} "
+        f"action={result['classification']['action']} "
+        f"approval_required="
+        f"{result['approval']['requires_human_approval']}"
+    )
+
+    return result
 
 
 def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
