@@ -17,6 +17,9 @@ class Settings:
         "GOOGLE_REDIRECT_URI",
         "http://localhost:8000/auth/google/callback",
     )
+    gmail_poll_interval_seconds: int = int(
+        os.getenv("GMAIL_POLL_INTERVAL_SECONDS", "30")
+    )
 
     groq_api_key: str = os.getenv("GROQ_API_KEY", "")
     groq_base_url: str = os.getenv(
@@ -67,6 +70,8 @@ class Settings:
     donation_approval_threshold: float = float(
         os.getenv("DONATION_APPROVAL_THRESHOLD", "100000")
     )
+
+    gmail_poll_interval_seconds: int = 30
 
 
 settings = Settings()
