@@ -12,6 +12,7 @@ from drmagent.models import (
 
 
 DEFAULT_DONATION_APPROVAL_THRESHOLD = 100_000
+DEFAULT_CONFIDENCE_THRESHOLD = 0.70
 
 
 BANK_PAYMENT_PATTERNS = [
@@ -130,8 +131,24 @@ def _rule_donation_amount(
 
     if any(amount > threshold for amount in amounts):
         return (
-            f"Donation/payment amount exceeds the human-approval "
+            "Donation/payment amount exceeds the human-approval "
             f"threshold of ₹{threshold:,.0f}."
+        )
+
+    return None
+
+
+def _rule_low_confidence(
+    classification: ActionClassification,
+    confidence_threshold: float,
+) -> Optional[str]:
+    """Require review when the model is not sufficiently confident."""
+
+    if classification.confidence < confidence_threshold:
+        return (
+            f"Classification confidence ({classification.confidence:.2f}) "
+            f"is below the human-approval threshold "
+            f"({confidence_threshold:.2f})."
         )
 
     return None
@@ -150,7 +167,10 @@ def _rule_refund_or_cancellation(
     text: str,
 ) -> Optional[str]:
     if _matches_any(text, REFUND_CANCELLATION_PATTERNS):
-        return "Donation refund or cancellation request requires human approval."
+        return (
+            "Donation refund or cancellation request requires "
+            "human approval."
+        )
 
     return None
 
@@ -159,7 +179,9 @@ def _rule_transaction_dispute(
     text: str,
 ) -> Optional[str]:
     if _matches_any(text, TRANSACTION_DISPUTE_PATTERNS):
-        return "Transaction or payment dispute requires human approval."
+        return (
+            "Transaction or payment dispute requires human approval."
+        )
 
     return None
 
@@ -190,6 +212,7 @@ def determine_human_approval(
     plan: ActionPlan,
     conversations: list[DonorConversation],
     donation_threshold: float = DEFAULT_DONATION_APPROVAL_THRESHOLD,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
 ) -> tuple[bool, list[str]]:
     """Evaluate every deterministic approval rule.
 
@@ -207,7 +230,7 @@ def determine_human_approval(
 
     reasons: list[str] = []
 
-    # Rule 1
+    # Rule 1: large donation/payment.
     reason = _rule_donation_amount(
         text,
         donation_threshold,
@@ -215,22 +238,30 @@ def determine_human_approval(
     if reason:
         reasons.append(reason)
 
-    # Rule 2
+    # Rule 2: low model confidence.
+    reason = _rule_low_confidence(
+        classification,
+        confidence_threshold,
+    )
+    if reason:
+        reasons.append(reason)
+
+    # Rule 3: bank/payment details.
     reason = _rule_bank_or_payment_details(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 3
+    # Rule 4: refund/cancellation.
     reason = _rule_refund_or_cancellation(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 4
+    # Rule 5: transaction/payment dispute.
     reason = _rule_transaction_dispute(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 5
+    # Rule 6: explicit human review.
     reason = _rule_explicit_human_review(
         profile,
         classification,
@@ -248,6 +279,7 @@ def apply_human_approval_policy(
     plan: ActionPlan,
     conversations: list[DonorConversation],
     donation_threshold: float = DEFAULT_DONATION_APPROVAL_THRESHOLD,
+    confidence_threshold: float = DEFAULT_CONFIDENCE_THRESHOLD,
 ) -> tuple[ActionPlan, list[str]]:
     """Apply deterministic approval policy to the action plan."""
 
@@ -257,9 +289,29 @@ def apply_human_approval_policy(
         plan=plan,
         conversations=conversations,
         donation_threshold=donation_threshold,
+        confidence_threshold=confidence_threshold,
     )
 
     # The deterministic policy is authoritative.
     plan.requires_human_approval = requires_human_approval
 
+    # If any deterministic rule fires, the actual action must become
+    # Human Review. This prevents the execution stage from treating a
+    # safety-triggered plan as an automatically sendable action.
+    # if requires_human_approval:
+    #     if plan.action != "Human Review":
+    #         plan.consistency_notes.append(
+    #             "Deterministic approval policy changed the action to "
+    #             "Human Review."
+    #         )
+
+    #     plan.action = "Human Review"
+    #     plan.recommended_action = (
+    #         "Escalate to a human before any donor communication."
+    #     )
+    #     plan.next_step = "Human approval required."
+    #     plan.message_type = None
+    #     plan.message_context = None
+    if requires_human_approval:
+        plan.action = "Human Review"
     return plan, reasons
