@@ -1,8 +1,7 @@
 from collections import defaultdict
 
 from drmagent.gmail.service import GmailService
-from drmagent.llm_utils import wrap_untrusted
-from drmagent.models import DonorConversation, DonorRecord, DonorProfile
+from drmagent.models import DonorConversation, DonorRecord, DonorProfile, GmailContext
 from drmagent.profile.agents import (
     consolidate,
     create_consolidation_agent,
@@ -12,10 +11,6 @@ from drmagent.profile.agents import (
 
 
 def format_conversations(conversations: list[DonorConversation], max_chars: int) -> str:
-    # Email subjects/bodies are donor-authored (or attacker-authored, if a
-    # donor's account is compromised) and are wrapped as untrusted content
-    # before they reach the consolidation prompt. See llm_utils.INJECTION_GUARD
-    # for the corresponding system-prompt instruction.
     blocks: list[str] = []
     for conversation in conversations:
         lines = [f"--- Thread: {conversation.subject or 'No subject'} ---"]
@@ -24,14 +19,38 @@ def format_conversations(conversations: list[DonorConversation], max_chars: int)
                 continue
             lines.append(
                 f"[{message.date or 'unknown date'}] From: {message.sender}\n"
-                f"To: {', '.join(message.recipients)}\n"
-                f"{wrap_untrusted(message.body_text)}"
+                f"To: {', '.join(message.recipients)}\n{message.body_text}"
             )
         if len(lines) > 1:
             blocks.append("\n\n".join(lines))
 
     combined = "\n\n".join(blocks)
     return combined[:max_chars] + ("\n\n[...truncated...]" if len(combined) > max_chars else "")
+
+def get_gmail_context(
+    conversations: list[DonorConversation],
+) -> GmailContext | None:
+    """Return Gmail context for the most recent message."""
+
+    messages = [
+        message
+        for conversation in conversations
+        for message in conversation.messages
+        if message.id and message.thread_id
+    ]
+
+    if not messages:
+        return None
+
+    latest_message = max(
+        messages,
+        key=lambda message: message.timestamp,
+    )
+
+    return GmailContext(
+        thread_id=latest_message.thread_id,
+        message_id=latest_message.id,
+    )
 
 
 def build_donor_profile(

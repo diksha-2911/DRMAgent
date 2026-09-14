@@ -1,10 +1,10 @@
 import csv
 import io
-import logging
 
 from drmagent.config import settings
 from drmagent.drm.agent import create_drm_agent, classify_and_plan
 from drmagent.drm.approval import apply_human_approval_policy
+from drmagent.drm.execution_agent import create_execution_agent, execute_plan
 from drmagent.gmail.service import GmailService
 from drmagent.models import (
     ActionClassification,
@@ -42,7 +42,7 @@ def load_donors_from_csv(content: bytes) -> list[DonorRecord]:
     ]
 
 
-def _process_donor_inner(gmail: GmailService, donor: DonorRecord) -> dict:
+def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
     # ------------------------------------------------------------------
     # 1. Build donor profile and retain the original Gmail conversations.
     # ------------------------------------------------------------------
@@ -117,28 +117,11 @@ Requirements:
         plan=plan,
         conversations=conversations,
         donation_threshold=settings.donation_approval_threshold,
-        confidence_threshold=settings.min_confidence_threshold,
     )
 
     # ------------------------------------------------------------------
     # 4. HARD APPROVAL GATE.
     # ------------------------------------------------------------------
-    donor_state = _state_store.get(donor.donor_id)
-    suppressed_for_cooldown = False
-    if is_in_cooldown(donor_state, plan.action, settings.action_cooldown_days):
-        suppressed_for_cooldown = True
-        plan.consistency_notes.append(
-            f"Action '{plan.action}' was suppressed: it was already taken for "
-            f"this donor within the last {settings.action_cooldown_days} day(s)."
-        )
-        original_action = plan.action
-        plan.action = "Wait"
-        plan.recommended_action = f"No action ({original_action} already sent recently)."
-        plan.next_step = "None; wait for the cooldown window to pass."
-        plan.message_type = None
-        plan.message_context = None
-    else:
-        _state_store.record_action(donor.donor_id, plan.action)
     execution = None
 
     if not plan.requires_human_approval:
@@ -235,9 +218,7 @@ Requirements:
                 execution = execution_result.model_dump()
 
     # ------------------------------------------------------------------
-    # 5. Return planning + approval information.
-    #
-    # Execution Agent will be connected in a later step.
+    # 5. Return planning + approval + execution information.
     # ------------------------------------------------------------------
     return {
         "donor": donor.model_dump(),
@@ -249,36 +230,5 @@ Requirements:
             "requires_human_approval": plan.requires_human_approval,
             "reason": approval_reasons,
         },
-        "cooldown_suppressed": suppressed_for_cooldown,
+        "execution": execution,
     }
-
-
-def process_donor(gmail: GmailService, donor: DonorRecord) -> dict:
-    """Process a single donor, never letting an unexpected failure here take
-    down the rest of a batch run. Any unhandled error is itself treated as a
-    reason for human review rather than as a crash."""
-
-    try:
-        return _process_donor_inner(gmail, donor)
-    except Exception as exc:  # noqa: BLE001 - deliberate top-level fail-safe
-        logger.exception("process_donor failed for donor_id=%s", donor.donor_id)
-        return {
-            "donor": donor.model_dump(),
-            "conversation_count": 0,
-            "profile": None,
-            "classification": None,
-            "plan": {
-                "donor_id": donor.donor_id,
-                "action": "Human Review",
-                "objective": "Recover from an unhandled processing error.",
-                "recommended_action": "Escalate to a human before any donor communication.",
-                "next_step": "Human approval required.",
-                "requires_human_approval": True,
-                "consistency_notes": [f"Unhandled error during processing: {exc}"],
-            },
-            "approval": {
-                "requires_human_approval": True,
-                "reason": [f"Unhandled processing error: {exc.__class__.__name__}: {exc}"],
-            },
-            "cooldown_suppressed": False,
-        }
