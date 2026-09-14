@@ -1,202 +1,492 @@
-# DRMAgent — Integrated Donor Relationship Management
+# DRMAgent
 
-An end-to-end prototype that connects donor CSV records, Gmail communication history, Strands-based donor-profile extraction, and the Donor Relationship Management decision flow.
+**DRMAgent** is an autonomous donor relationship management system that connects Gmail conversations with structured donor intelligence and an agent-driven decision workflow.
+
+The project is designed around a simple principle:
+
+> **Use LLMs for interpretation and planning, while keeping sensitive approval decisions and application control deterministic in code.**
+
+---
+
+## What it does
+
+DRMAgent can:
+
+* Authenticate an NGO user through the application login flow
+* Connect to Gmail through Google OAuth 2.0 with PKCE
+* Load donor records from a CSV file
+* Discover Gmail conversations associated with each donor
+* Normalize email content and build chronological conversation summaries
+* Extract a structured `DonorProfile` using Strands agents
+* Classify the appropriate donor action
+* Generate an executable `ActionPlan`
+* Apply deterministic human-approval rules for sensitive actions
+* Generate donor email drafts
+* Send emails through Gmail when human approval is not required
+* Monitor Gmail for new incoming donor messages
+
+The supported DRM actions are:
+
+1. **Human Review**
+2. **Thank You**
+3. **Follow-Up**
+4. **Outreach**
+5. **Wait**
+
+---
 
 ## Architecture
 
 ```text
-NGO login
-   |
-   +--> Google Gmail OAuth (read-only)
-   |
-   +--> Donor CSV (donor_id, email, optional name)
-              |
-              v
-       Gmail thread search
-              |
-              v
-       Full donor conversations
-              |
-              v
-       Message normalization
-              |
-              v
-       Thread consolidation
-              |
-              v
-       ConversationSummary
-              |
-              v
-       DonorProfile extraction
-              |
-              v
-       DRM classification
-              |
-              v
-       ActionPlan
-              |
-       +------+------+------+------+ 
-       |      |      |      |      |
-    Thank   Outreach Follow  Wait  Human
-     You              Up          Review
+                         ┌─────────────────────┐
+                         │      NGO User       │
+                         └──────────┬──────────┘
+                                    │
+                              FastAPI Login
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │   Google OAuth 2.0  │
+                         │       + PKCE        │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │    Gmail Service    │
+                         │                     │
+                         │ Search / Parse /    │
+                         │ Reply / Send        │
+                         └──────────┬──────────┘
+                                    │
+                         ┌──────────▼──────────┐
+                         │    Gmail Watcher    │
+                         │   Polling Worker    │
+                         └──────────┬──────────┘
+                                    │
+                           Incoming donor email
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Donor Resolver /    │
+                         │   Orchestrator      │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Conversation History│
+                         │   + Normalization   │
+                         └──────────┬──────────┘
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Strands Profile     │
+                         │ Pipeline            │
+                         │                     │
+                         │ Consolidate →       │
+                         │ Extract Profile     │
+                         └──────────┬──────────┘
+                                    │
+                              DonorProfile
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ DRM Decision Layer  │
+                         │                     │
+                         │ Classify → Plan     │
+                         └──────────┬──────────┘
+                                    │
+                              ActionPlan
+                                    │
+                                    ▼
+                         ┌─────────────────────┐
+                         │ Deterministic Human │
+                         │ Approval Policy     │
+                         └──────────┬──────────┘
+                              ┌─────┴─────┐
+                              │           │
+                       Approval needed   Safe
+                              │           │
+                              ▼           ▼
+                       Human Review   Execution Agent
+                                              │
+                                         Email Draft
+                                              │
+                                              ▼
+                                         Gmail Send
 ```
 
-The `DonorProfile` is the contract between the profile pipeline and the DRM decision layer. This keeps the DRM agent independent of Gmail implementation details.
+### Design principle
 
-## Project structure
+The profile pipeline converts Gmail-specific communication into structured donor information.
+
+The DRM decision layer then operates on those structured contracts rather than directly depending on Gmail implementation details.
+
+LLMs are responsible for:
+
+* Understanding conversations
+* Extracting donor information
+* Classifying donor intent
+* Creating action plans
+* Generating email drafts
+
+Application code remains responsible for:
+
+* Authentication
+* Gmail access
+* Deterministic approval rules
+* Session handling
+* Email execution
+* Workflow orchestration
+
+---
+
+# Directory Structure
 
 ```text
-drmagent/
-├── main.py                 # FastAPI application, auth, OAuth callback, donor endpoints
-├── config.py               # Environment-backed settings
-├── models.py               # Pydantic data contracts
-├── orchestrator.py         # End-to-end donor processing pipeline
-├── gmail/
-│   ├── auth.py             # Google OAuth URL + authorization-code exchange
-│   └── service.py          # Gmail thread search, retrieval, and message parsing
-├── profile/
-│   ├── agents.py           # Consolidation and donor-profile Strands agents
-│   └── service.py          # Conversation formatting + profile pipeline
-└── drm/
-    ├── agent.py            # Final donor action classification + action plan
-    └── tools.py            # Draft/escalation/update tool contracts
-
-.env.example               # Required environment variables
-requirements.txt            # Python dependencies
+DRMAgent/
+│
+├── drmagent/
+│   ├── __init__.py
+│   ├── agent.py
+│   ├── config.py
+│   ├── main.py
+│   ├── models.py
+│   ├── orchestrator.py
+│   │
+│   ├── gmail/
+│   │   ├── auth.py
+│   │   └── service.py
+│   │
+│   ├── profile/
+│   │   ├── agents.py
+│   │   └── service.py
+│   │
+│   ├── drm/
+│   │   ├── agent.py
+│   │   ├── approval.py
+│   │   ├── execution_agent.py
+│   │   └── tools.py
+│   │
+│   └── worker/
+│       └── gmail_watcher.py
+│
+├── donors.csv
+├── requirements.txt
+├── .gitignore
+├── LICENSE
+└── README.md
 ```
 
-## Model routing
+# Technology Stack
 
-The project intentionally does not use the largest model for every step.
+* **Python**
+* **FastAPI** — REST API and Swagger/OpenAPI interface
+* **Uvicorn** — ASGI server
+* **Google Gmail API** — Gmail access and email sending
+* **Google OAuth 2.0 + PKCE** — authentication and authorization
+* **Strands Agents** — agent orchestration and structured outputs
+* **Groq** — LLM inference through its OpenAI-compatible API
+* **Pydantic** — structured data validation
+* **BeautifulSoup** — HTML email parsing
+* **CSV** — donor data input
 
-| Function | Model | Reason |
-|---|---|---|
-| Conversation consolidation | `openai/gpt-oss-20b` | Fast, cost-efficient summarization |
-| Donor-profile extraction | `openai/gpt-oss-120b` | Higher accuracy for nuanced structured extraction |
-| Action classification | `openai/gpt-oss-20b` | Small, constrained classification task |
-| Action planning | `openai/gpt-oss-120b` | More nuanced operational reasoning |
+---
 
-Groq currently lists GPT-OSS 20B and 120B as production models with tool use and JSON Schema support; GPT-OSS 120B is positioned for higher-capability agentic work, while 20B is the faster/cost-efficient option. See the official Groq model documentation for current availability. 
+# Prerequisites
 
-## Setup
+Before running DRMAgent, make sure you have:
 
-### 1. Create a virtual environment
+* Python 3.10+ installed
+* A Google Cloud project
+* Gmail API enabled in Google Cloud
+* A Google OAuth 2.0 client
+* A Groq API key
+* Access to a Gmail account that can be authorized by the application
 
-Windows:
+---
+
+# Installation
+
+## 1. Clone the repository
+
+```bash
+git clone https://github.com/diksha-2911/DRMAgent.git
+cd DRMAgent
+```
+
+---
+
+## 2. Create a virtual environment
+
+### Windows
+
+Using the Python launcher:
 
 ```powershell
 py -m venv .venv
-.venv\Scripts\activate
 ```
 
-macOS/Linux:
+Activate it:
+
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+If `py` is unavailable:
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+### macOS / Linux
 
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 ```
 
-### 2. Install dependencies
+---
+
+## 3. Install dependencies
+
+Upgrade pip:
+
+```bash
+python -m pip install --upgrade pip
+```
+
+Install project dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-### 3. Configure environment variables
+---
 
-Copy `.env.example` to `.env` and fill in:
+# Environment Configuration
 
-- `GROQ_API_KEY`
-- `GOOGLE_CLIENT_ID`
-- `GOOGLE_CLIENT_SECRET`
-- `NGO_USERNAME`
-- `NGO_PASSWORD`
+Create a `.env` file in the root directory.
 
-In Google Cloud, enable the Gmail API and configure an OAuth client with this redirect URI:
+```env
+# --------------------------------------------------
+# Application Authentication
+# --------------------------------------------------
+
+NGO_USERNAME=ngo_admin
+NGO_PASSWORD=replace-with-a-strong-password
+
+
+# --------------------------------------------------
+# Google OAuth
+# --------------------------------------------------
+
+GOOGLE_CLIENT_ID=your-google-client-id
+GOOGLE_CLIENT_SECRET=your-google-client-secret
+
+GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback
+
+
+# --------------------------------------------------
+# Groq
+# --------------------------------------------------
+
+GROQ_API_KEY=your-groq-api-key
+
+GROQ_BASE_URL=https://api.groq.com/openai/v1
+
+
+# --------------------------------------------------
+# Gmail Watcher
+# --------------------------------------------------
+
+GMAIL_POLL_INTERVAL_SECONDS=30
+
+
+# --------------------------------------------------
+# LLM Models
+# --------------------------------------------------
+
+CONSOLIDATION_MODEL=openai/gpt-oss-20b
+
+EXTRACTION_MODEL=openai/gpt-oss-120b
+
+CLASSIFICATION_MODEL=openai/gpt-oss-20b
+
+PLANNING_MODEL=openai/gpt-oss-120b
+
+EXECUTION_MODEL=openai/gpt-oss-120b
+
+
+# --------------------------------------------------
+# Processing Limits
+# --------------------------------------------------
+
+MAX_THREADS_PER_DONOR=20
+
+MAX_MESSAGES_PER_THREAD=30
+
+MAX_CONVERSATION_CHARS=50000
+
+
+# --------------------------------------------------
+# Human Approval
+# --------------------------------------------------
+
+DONATION_APPROVAL_THRESHOLD=100000
+```
+
+The application loads these values through `drmagent/config.py`.
+
+**Never commit `.env` to Git.**
+
+---
+
+# Google Gmail OAuth Setup
+
+DRMAgent uses Google OAuth to access the Gmail account.
+
+## Step 1 — Create a Google Cloud project
+
+Open Google Cloud Console and either create a new project or select an existing project.
+
+## Step 2 — Enable Gmail API
+
+Navigate to:
+
+```text
+Google Cloud Console
+→ APIs & Services
+→ Library
+→ Gmail API
+→ Enable
+```
+
+## Step 3 — Configure OAuth consent screen
+
+Configure the OAuth consent screen for the application.
+
+Add the required Gmail scopes used by the application.
+
+## Step 4 — Create OAuth credentials
+
+Create an OAuth 2.0 Client ID.
+
+For local development, configure the redirect URI as:
 
 ```text
 http://localhost:8000/auth/google/callback
 ```
 
-Use a Gmail read-only scope. The application never needs Gmail send permission for the current prototype.
+## Step 5 — Add credentials to `.env`
 
-### 4. Start the API
+```env
+GOOGLE_CLIENT_ID=your-client-id
+GOOGLE_CLIENT_SECRET=your-client-secret
+
+GOOGLE_REDIRECT_URI=http://localhost:8000/auth/google/callback
+```
+
+The application generates the authorization URL and uses PKCE during the authorization-code exchange.
+
+---
+
+# Donor CSV
+
+Donor records are loaded from a CSV file.
+
+The minimum required columns are:
+
+```csv
+donor_id,email,name
+D001,donor@example.com,Example Donor
+D002,another@example.com,Another Donor
+```
+
+### Required fields
+
+| Field      | Required | Description             |
+| ---------- | -------- | ----------------------- |
+| `donor_id` | Yes      | Unique donor identifier |
+| `email`    | Yes      | Donor email address     |
+| `name`     | Yes       | Donor's display name    |
+
+The donor email is used to associate Gmail conversations with the donor record.
+
+---
+
+# Running the Application
+
+Start the FastAPI server:
 
 ```bash
 uvicorn drmagent.main:app --reload
 ```
 
-Open the FastAPI Swagger UI at:
+The application will be available at:
+
+```text
+http://localhost:8000
+```
+
+Swagger API documentation:
 
 ```text
 http://localhost:8000/docs
 ```
 
-## Running the flow
+---
 
-1. Call `POST /login` with the NGO username/password.
-2. The response contains `google_auth_url`.
-3. Open that URL and grant Gmail read-only access.
-4. Google redirects to `/auth/google/callback` and establishes the application session.
-5. Upload a donor CSV using `POST /donors/upload`.
-6. The CSV must contain at least:
+# Development Commands
 
-```csv
-donor_id,email,name
-D001,donor@example.com,Example Donor
+Create environment:
+
+```bash
+python -m venv .venv
 ```
 
-7. Call `POST /donors/process`.
-8. For every donor, the system searches Gmail for messages in either direction with that donor, retrieves the matching threads, normalizes the email bodies, summarizes each thread, builds a structured `DonorProfile`, classifies the next DRM action, and creates an `ActionPlan`.
+Activate on Windows:
 
-## Data flow for one donor
+```powershell
+.venv\Scripts\Activate.ps1
+```
+
+Activate on macOS/Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the API:
+
+```bash
+uvicorn drmagent.main:app --reload
+```
+
+Open Swagger:
 
 ```text
-D001 / donor@example.com
-          |
-          v
-Gmail thread search
-          |
-          v
-Thread A + Thread B + ...
-          |
-          v
-Clean messages
-          |
-          v
-Per-thread ConversationSummary
-          |
-          v
-Aggregate summary
-          |
-          v
-DonorProfile
-          |
-          v
-ActionClassification
-          |
-          v
-ActionPlan
+http://localhost:8000/docs
 ```
 
-## DRM action policy
+---
 
-The final action is exactly one of:
+# License
 
-- **Human Review** — major gifts, complaints, sensitive requests, or ambiguous cases.
-- **Thank You** — recent donation that has not been acknowledged.
-- **Follow-Up** — explicit pending donor request or unresolved NGO commitment.
-- **Outreach** — proactive engagement is due.
-- **Wait** — no action is currently needed.
+This project is licensed under the **MIT License**.
 
-The priority order is deliberate so that a higher-priority event is not overridden by generic outreach.
+See [`LICENSE`](LICENSE) for the complete license text.
 
-## Current prototype boundaries
+---
 
-This branch intentionally keeps external side effects behind tool contracts. `draft_message`, `update_donor`, and `flag_for_human` currently return request payloads rather than sending email or writing to a production database. A production integration should connect these tools to a persistent donor store, task/CRM system, and a separate communication approval/send service.
+# Disclaimer
 
-The current FastAPI sessions and donor records are in-memory and are suitable for local development only. Production deployment should use a persistent session store/database and encrypt OAuth credentials at rest.
+DRMAgent is an engineering prototype for donor relationship automation.
 
-## Security
-
-Never commit `.env`, OAuth tokens, client secrets, or API keys. If a secret has ever been committed to Git, rotate/revoke it before using the repository in a real environment.
+Automated interpretation, decision-making and email sending can have real-world consequences. Before using the system with real donor information or enabling autonomous communication in production, thoroughly review and harden authentication, authorization, data storage, approval workflows, audit logging, idempotency, privacy controls and email-sending safeguards.
