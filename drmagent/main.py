@@ -18,6 +18,39 @@ from drmagent.orchestrator import load_donors_from_csv, process_donor
 from drmagent.security import decrypt_credentials, encrypt_credentials
 
 
+# application treat Gmail as connected without storing OAuth credentials.
+import secrets
+import time
+from pathlib import Path
+from typing import Any
+
+from fastapi import FastAPI, File, HTTPException, Request, UploadFile
+from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi.staticfiles import StaticFiles
+from google.oauth2.credentials import Credentials
+
+from drmagent.config import settings
+from drmagent.gmail.auth import create_authorization_url, exchange_code
+from drmagent.gmail.mock_service import MockGmailService
+from drmagent.gmail.service import GmailService
+from drmagent.models import (
+    ActionClassification,
+    ActionPlan,
+    DonorConversation,
+    DonorRecord,
+    DonorProfile,
+    LoginRequest,
+)
+from drmagent.audit import AuditLog
+from drmagent.jobs import get_job, start_batch
+from drmagent.orchestrator import load_donors_from_csv, process_donor
+from drmagent.review_store import ReviewItemAlreadyResolved, ReviewItemNotFound, ReviewStore
+from drmagent.security import decrypt_credentials, encrypt_credentials
+from drmagent.drm.execution_agent import create_execution_agent, execute_plan
+from drmagent.drm.approval import determine_human_approval
+from drmagent.profile.service import format_conversations
+
+
 # Sentinel used when USE_MOCK_GMAIL=true. This lets the rest of the
 # application treat Gmail as connected without storing OAuth credentials.
 _MOCK_CREDENTIALS_MARKER = "mock"
@@ -28,6 +61,8 @@ app = FastAPI(title="DRM Agent", version="1.0.0")
 # in production.
 sessions: dict[str, dict[str, Any]] = {}
 oauth_states: dict[str, dict[str, str]] = {}
+review_store = ReviewStore(settings.review_store_path)
+audit_log = AuditLog(settings.audit_log_path)
 donor_records: list[DonorRecord] = []
 
 _session_created_at: dict[str, float] = {}
@@ -297,49 +332,208 @@ def process_donors(request: Request):
         )
 
     gmail = _build_gmail_service(session)
+    actor = _actor(session)
 
-    results = [
-        process_donor(gmail, donor)
-        for donor in donor_records
-    ]
-
-    return {
-        "count": len(results),
-        "results": results,
-    }
-
-
-@app.post("/test/gmail-reply")
-def test_gmail_reply(request: Request):
-    session = _session(request)
-
-    gmail = _build_gmail_service(session)
-
-    # This endpoint intentionally sends a real email when real Gmail mode
-    # is enabled. Use only for local testing.
-    if settings.use_mock_gmail:
-        raise HTTPException(
-            status_code=400,
-            detail="gmail-reply test requires real Gmail mode",
-        )
-
-    result = gmail.send_reply(
-        thread_id="1a096798792ca6ef",
-        message_id="1a0967ab3c430a11",
-        to="cairen.in@gmail.com",
-        subject="Re: Test Gmail Reply",
-        body="""Hi,
-
-This is a test reply from the DRMAgent Gmail execution layer.
-
-Regards,
-DRMAgent""",
+    job_id = start_batch(
+        list(donor_records),
+        lambda donor, on_phase: process_donor(
+            gmail,
+            donor,
+            actor=actor,
+            progress=on_phase,
+        ),
     )
 
+    return {"job_id": job_id, "count": len(donor_records)}
+
+
+def _public_result(result: dict[str, Any]) -> dict[str, Any]:
+    """Remove private review context before data reaches the browser."""
+    public = dict(result)
+    public.pop("_review_context", None)
+    return public
+
+
+@app.get("/jobs/{job_id}")
+def job_status(job_id: str, request: Request):
+    _session(request)
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    job = dict(job)
+    job["results"] = [_public_result(r) for r in job.get("results", [])]
+    return job
+
+
+@app.get("/reviews")
+def list_reviews(request: Request, status: str | None = "pending"):
+    _session(request)
+    records = review_store.list(status=status)
+    for record in records:
+        record.get("result", {}).pop("_review_context", None)
+    return {"reviews": records}
+
+
+@app.get("/reviews/{donor_id}")
+def get_review(donor_id: str, request: Request):
+    _session(request)
+    record = review_store.get(donor_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    public = dict(record)
+    public["result"] = dict(public.get("result", {}))
+    public["result"].pop("_review_context", None)
+    return public
+
+
+@app.patch("/reviews/{donor_id}/draft")
+def edit_review_draft(donor_id: str, payload: dict[str, Any], request: Request):
+    session = _session(request)
+    try:
+        record = review_store.edit(donor_id, payload, _actor(session))
+    except ReviewItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReviewItemAlreadyResolved as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    audit_log.log(
+        event_type="human_review_draft_edited",
+        donor_id=donor_id,
+        actor=_actor(session),
+        details={"fields": list(payload.keys())},
+    )
+    public = dict(record)
+    public["result"] = dict(public.get("result", {}))
+    public["result"].pop("_review_context", None)
+    return public
+
+
+def _send_reviewed_item(record: dict, session: dict[str, Any], donor_id: str) -> dict[str, Any]:
+    context = record.get("result", {}).get("_review_context") or {}
+    donor = DonorRecord(**context.get("donor", {}))
+    proposed_plan = ActionPlan(**context.get("proposed_plan", {}))
+    execution = record.get("result", {}).get("execution") or {}
+    email = execution.get("email") or {}
+
+    if donor.donor_id != donor_id:
+        raise HTTPException(status_code=400, detail="Review donor mismatch")
+    if not donor.email:
+        raise HTTPException(status_code=400, detail="Donor has no email address")
+    if not email.get("subject") or not email.get("body"):
+        raise HTTPException(
+            status_code=409,
+            detail="This review item has no editable email draft to approve.",
+        )
+
+    # The reviewer approves the exact stored draft. Do not call the LLM again
+    # at approval time: approval must not silently replace what the human saw.
+    gmail = _build_gmail_service(session)
+    gmail_context = context.get("gmail_context")
+    thread_id = gmail_context.get("thread_id") if gmail_context else None
+    message_id = gmail_context.get("message_id") if gmail_context else None
+
+    if thread_id and message_id:
+        gmail_result = gmail.send_reply(
+            thread_id=thread_id,
+            message_id=message_id,
+            to=donor.email,
+            subject=email["subject"],
+            body=email["body"],
+        )
+    else:
+        send_email = getattr(gmail, "send_email", None)
+        if not callable(send_email):
+            raise HTTPException(status_code=500, detail="Gmail service cannot send new emails")
+        gmail_result = send_email(
+            to=donor.email,
+            subject=email["subject"],
+            body=email["body"],
+        )
+
+    gmail_message_id = (
+        gmail_result.get("id") if isinstance(gmail_result, dict) else None
+    )
+    audit_log.log(
+        event_type="human_review_approved_and_sent",
+        donor_id=donor_id,
+        actor=_actor(session),
+        details={
+            "action": proposed_plan.action,
+            "gmail_message_id": gmail_message_id,
+        },
+    )
     return {
+        "donor_id": donor_id,
         "status": "sent",
-        "gmail_response": result,
+        "execution": {
+            **execution,
+            "status": "sent",
+            "gmail_message_id": gmail_message_id,
+            "email": {
+                "to": donor.email,
+                "subject": email["subject"],
+                "body": email["body"],
+            },
+        },
     }
+
+
+@app.post("/reviews/{donor_id}/approve")
+def approve_review(donor_id: str, request: Request):
+    session = _session(request)
+    record = review_store.get(donor_id)
+    if not record:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    if record.get("status") != "pending":
+        raise HTTPException(status_code=409, detail=f"Review item is already '{record.get('status')}'")
+
+    try:
+        result = _send_reviewed_item(record, session, donor_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        audit_log.log(
+            event_type="human_review_send_failed",
+            donor_id=donor_id,
+            actor=_actor(session),
+            details={"error": str(exc)},
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"Approved draft could not be sent: {exc.__class__.__name__}: {exc}",
+        ) from exc
+
+    try:
+        review_store.approve(donor_id, _actor(session))
+    except (ReviewItemNotFound, ReviewItemAlreadyResolved) as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    return result
+
+
+@app.post("/reviews/{donor_id}/reject")
+def reject_review(donor_id: str, request: Request, payload: dict[str, Any] | None = None):
+    session = _session(request)
+    reason = (payload or {}).get("reason", "Rejected by reviewer")
+    try:
+        record = review_store.reject(donor_id, _actor(session), reason)
+    except ReviewItemNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except ReviewItemAlreadyResolved as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    audit_log.log(
+        event_type="human_review_rejected",
+        donor_id=donor_id,
+        actor=_actor(session),
+        details={"reason": reason},
+    )
+    return record
+
+
+@app.get("/audit")
+def list_audit(request: Request, donor_id: str | None = None, limit: int = 200):
+    _session(request)
+    return {"events": audit_log.list(donor_id=donor_id, limit=max(1, min(limit, 500)))}
 
 
 # Serve the SPA frontend at /app/.

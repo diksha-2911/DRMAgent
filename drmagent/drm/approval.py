@@ -154,6 +154,21 @@ def _rule_low_confidence(
     return None
 
 
+def _rule_low_profile_confidence(
+    profile: DonorProfile,
+    confidence_threshold: float,
+) -> Optional[str]:
+    """Require review when the extracted donor profile is uncertain."""
+
+    if profile.confidence < confidence_threshold:
+        return (
+            f"Donor profile confidence ({profile.confidence:.2f}) is below "
+            f"the human-approval threshold ({confidence_threshold:.2f})."
+        )
+
+    return None
+
+
 def _rule_bank_or_payment_details(
     text: str,
 ) -> Optional[str]:
@@ -238,7 +253,7 @@ def determine_human_approval(
     if reason:
         reasons.append(reason)
 
-    # Rule 2: low model confidence.
+    # Rule 2: low classification confidence.
     reason = _rule_low_confidence(
         classification,
         confidence_threshold,
@@ -246,22 +261,30 @@ def determine_human_approval(
     if reason:
         reasons.append(reason)
 
-    # Rule 3: bank/payment details.
+    # Rule 3: low extracted-profile confidence.
+    reason = _rule_low_profile_confidence(
+        profile,
+        confidence_threshold,
+    )
+    if reason:
+        reasons.append(reason)
+
+    # Rule 4: bank/payment details.
     reason = _rule_bank_or_payment_details(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 4: refund/cancellation.
+    # Rule 5: refund/cancellation.
     reason = _rule_refund_or_cancellation(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 5: transaction/payment dispute.
+    # Rule 6: transaction/payment dispute.
     reason = _rule_transaction_dispute(text)
     if reason:
         reasons.append(reason)
 
-    # Rule 6: explicit human review.
+    # Rule 7: explicit human review.
     reason = _rule_explicit_human_review(
         profile,
         classification,
@@ -295,23 +318,10 @@ def apply_human_approval_policy(
     # The deterministic policy is authoritative.
     plan.requires_human_approval = requires_human_approval
 
-    # If any deterministic rule fires, the actual action must become
-    # Human Review. This prevents the execution stage from treating a
-    # safety-triggered plan as an automatically sendable action.
-    # if requires_human_approval:
-    #     if plan.action != "Human Review":
-    #         plan.consistency_notes.append(
-    #             "Deterministic approval policy changed the action to "
-    #             "Human Review."
-    #         )
-
-    #     plan.action = "Human Review"
-    #     plan.recommended_action = (
-    #         "Escalate to a human before any donor communication."
-    #     )
-    #     plan.next_step = "Human approval required."
-    #     plan.message_type = None
-    #     plan.message_context = None
+    # If any deterministic rule fires, force the action itself to Human
+    # Review too (not just the boolean flag) so a downstream consumer that
+    # only checks `plan.action` can't mistake this for a sendable action.
     if requires_human_approval:
         plan.action = "Human Review"
+
     return plan, reasons

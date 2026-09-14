@@ -26,6 +26,14 @@ _lock = threading.Lock()
 # re-run.
 EDITABLE_PLAN_FIELDS = {"recommended_action", "next_step", "message_type", "message_context"}
 
+# The email actually sent on approval lives at result.execution.email
+# (subject/body), not on the plan — the plan only carries the
+# message_type/message_context metadata the LLM used to draft it. These
+# two keys, sent by the review editor UI as "email_subject"/"email_body",
+# must be written to that execution.email location, or an edit a reviewer
+# makes in the UI has no effect on what actually gets sent.
+EDITABLE_EMAIL_FIELDS = {"email_subject": "subject", "email_body": "body"}
+
 
 class ReviewItemNotFound(KeyError):
     pass
@@ -124,17 +132,39 @@ class ReviewStore:
         """Edit the draft plan's message/execution fields on a pending
         item. This does NOT resolve the item — a human must still
         explicitly approve or reject it afterward, even after editing."""
-        applied = {k: v for k, v in updates.items() if k in EDITABLE_PLAN_FIELDS}
+        applied_plan = {k: v for k, v in updates.items() if k in EDITABLE_PLAN_FIELDS}
+        applied_email = {
+            EDITABLE_EMAIL_FIELDS[k]: v
+            for k, v in updates.items()
+            if k in EDITABLE_EMAIL_FIELDS and v is not None
+        }
         with _lock:
             data = self._read()
             record = self._require_pending(data, donor_id)
             plan = record["result"].setdefault("plan", {})
-            plan.update(applied)
+            plan.update(applied_plan)
+
+            if applied_email:
+                execution = record["result"].setdefault("execution", {}) or {}
+                email = execution.setdefault("email", {}) or {}
+                email.update(applied_email)
+                execution["email"] = email
+                record["result"]["execution"] = execution
+                # Keep the private review context (used at approval time)
+                # in sync too, since _send_reviewed_item reads from there.
+                context = record["result"].get("_review_context")
+                if context is not None:
+                    ctx_execution = context.setdefault("execution", {}) or {}
+                    ctx_email = ctx_execution.setdefault("email", {}) or {}
+                    ctx_email.update(applied_email)
+                    ctx_execution["email"] = ctx_email
+                    context["execution"] = ctx_execution
+
             record["edit_history"].append(
                 {
                     "edited_at": datetime.now(timezone.utc).isoformat(),
                     "edited_by": actor,
-                    "fields": applied,
+                    "fields": {**applied_plan, **applied_email},
                 }
             )
             self._write(data)

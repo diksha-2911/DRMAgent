@@ -179,12 +179,6 @@ def _process_donor_inner(
     ):
         suppressed_for_cooldown = True
 
-        plan.consistency_notes.append(
-            f"Action '{plan.action}' was suppressed: it was already taken "
-            f"for this donor within the last "
-            f"{settings.action_cooldown_days} day(s)."
-        )
-
         original_action = plan.action
         plan.action = "Wait"
         plan.recommended_action = (
@@ -567,9 +561,6 @@ def process_donor(
                 ),
                 "next_step": "Human approval required.",
                 "requires_human_approval": True,
-                "consistency_notes": [
-                    f"Unhandled error during processing: {exc}"
-                ],
             },
             "approval": {
                 "requires_human_approval": True,

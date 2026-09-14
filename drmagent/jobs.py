@@ -4,10 +4,9 @@
 HTTP request open for the whole batch, with the frontend showing a fixed,
 fake phase animation while it waited. This module instead runs the batch
 on a dedicated thread and keeps a shared, lock-protected status dict that
-`/donors/process/status/{job_id}` can poll — giving the frontend real
-per-donor progress (which donor, which pipeline phase) instead of a canned
-animation, without pulling in a task queue dependency for a prototype this
-size.
+`/jobs/{job_id}` can poll — giving the frontend real per-donor progress
+(which donor, which pipeline phase) instead of a canned animation, without
+pulling in a task queue dependency for a prototype this size.
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ def create_job(total: int) -> str:
             "completed": 0,
             "current_donor": None,
             "current_phase": None,
+            "current_detail": None,
             "results": [],
             "error": None,
             "started_at": datetime.now(timezone.utc).isoformat(),
@@ -60,8 +60,20 @@ def _run_batch(job_id: str, donors: list, process_one: Callable) -> None:
         for donor in donors:
             label = donor.name or donor.donor_id
 
-            def on_phase(phase: str, _label=label) -> None:
-                _update(job_id, current_donor=_label, current_phase=phase)
+            # `orchestrator.process_donor`'s progress callback is called as
+            # progress(phase_name, detail) -- two positional args. `_label`
+            # is bound once via the default-argument trick (the standard
+            # fix for late-binding closures in a loop) and must NOT be a
+            # plain positional parameter, or the caller's `detail` argument
+            # silently overwrites it on every call, showing the phase
+            # sentence twice in the UI instead of "<donor name> (<phase>)".
+            def on_phase(phase_name: str, detail: str = "", _label=label) -> None:
+                _update(
+                    job_id,
+                    current_donor=_label,
+                    current_phase=phase_name,
+                    current_detail=detail,
+                )
 
             result = process_one(donor, on_phase)
             results.append(result)
@@ -76,6 +88,7 @@ def _run_batch(job_id: str, donors: list, process_one: Callable) -> None:
             status="done",
             current_phase=None,
             current_donor=None,
+            current_detail=None,
             finished_at=datetime.now(timezone.utc).isoformat(),
         )
     except Exception as exc:  # noqa: BLE001 - surfaced to the poller, not silently dropped
