@@ -81,17 +81,20 @@ class ActionPlan(BaseModel):
     message_context: Optional[str] = None
     requires_human_approval: bool = False
     due_date: Optional[str] = None
-    # Populated by code (never by the LLM) when a deterministic check had to
-    # correct or override something the model produced, e.g. a mismatch
-    # between the classified action and the planned action, or a hard
-    # approval rule forcing the action to Human Review.
-    consistency_notes: list[str] = Field(default_factory=list)
+
+class GmailContext(BaseModel):
+    thread_id: str
+    message_id: str
+
+class EmailDraft(BaseModel):
+    to: str
+    subject: str
+    body: str
 
 
-class DonorActionState(BaseModel):
-    """Persisted record of the last action taken for a donor, used to avoid
-    re-triggering the same low-stakes outbound action on every run."""
-
-    donor_id: str
-    last_action: Optional[Action] = None
-    last_action_at: Optional[str] = None  # ISO-8601 timestamp
+class ExecutionResult(BaseModel):
+    status: Literal["drafted", "not_executed"]
+    thread_id: Optional[str] = None
+    message_id: Optional[str] = None
+    email: Optional[EmailDraft] = None
+    reason: Optional[str] = None
